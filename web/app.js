@@ -69,6 +69,9 @@ function geometryObjects() {
 }
 
 function draw() {
+  // Keep the render loop alive while result loading is asynchronous. The first
+  // frame usually runs before a bundled, server, or local result has loaded.
+  requestAnimationFrame(draw)
   const rect=canvas.getBoundingClientRect()
   const dpr=Math.max(1,window.devicePixelRatio||1)
   const W=Math.round(rect.width*dpr), H=Math.round(rect.height*dpr)
@@ -124,7 +127,6 @@ function draw() {
       ctx.stroke()
     }
   }
-  requestAnimationFrame(draw)
 }
 requestAnimationFrame(draw)
 
