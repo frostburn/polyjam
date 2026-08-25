@@ -53,5 +53,13 @@ int main() {
     std::cerr << "FAIL: expected a feasible tetrahedron crystal-core threshold construction\n";
     return EXIT_FAILURE;
   }
+
+  cfg.count = 50;
+  cfg.seed = 7;
+  const Packing round_result = search(icosa, dodeca, cfg);
+  if (!round_result.feasible || round_result.scale > 4.8 || round_result.poses.size() != 50) {
+    std::cerr << "FAIL: expected a dense sphere-like lattice construction for icosahedra\n";
+    return EXIT_FAILURE;
+  }
   std::cout << "lattice search test passed\n";
 }

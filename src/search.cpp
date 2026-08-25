@@ -226,6 +226,8 @@ struct LatticePiece {
   Vec3 box_center;
 };
 
+enum class RoundLattice { fcc, bcc };
+
 static LatticePiece lattice_piece(const Polyhedron& piece, const Quat& rotation) {
   LatticePiece result;
   result.rotation = rotation;
@@ -275,6 +277,62 @@ static std::vector<Vec3> contained_lattice_cells(
   return cells;
 }
 
+static bool round_lattice_point(RoundLattice lattice, int x, int y, int z) {
+  if (lattice == RoundLattice::fcc) return ((x + y + z) & 1) == 0;
+  const int px = std::abs(x) & 1;
+  return (std::abs(y) & 1) == px && (std::abs(z) & 1) == px;
+}
+
+static double round_lattice_spacing(const LatticePiece& piece, RoundLattice lattice) {
+  double spacing = 0.0;
+  // Check several neighbour shells. For a convex body, separation by the plane
+  // normal to every lattice displacement is conservative; farther neighbours
+  // rapidly produce weaker bounds but are included for elongated custom hulls.
+  for (int x = -3; x <= 3; ++x) for (int y = -3; y <= 3; ++y) for (int z = -3; z <= 3; ++z) {
+    if ((x == 0 && y == 0 && z == 0) || !round_lattice_point(lattice, x, y, z)) continue;
+    const Vec3 delta{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)};
+    const Vec3 axis = normalized(delta);
+    double lo = std::numeric_limits<double>::infinity();
+    double hi = -std::numeric_limits<double>::infinity();
+    for (const auto& vertex : piece.vertices) {
+      const double projection = dot(vertex, axis);
+      lo = std::min(lo, projection);
+      hi = std::max(hi, projection);
+    }
+    spacing = std::max(spacing, (hi - lo) / norm(delta));
+  }
+  return spacing;
+}
+
+static std::vector<Vec3> contained_round_lattice_cells(
+  const LatticePiece& piece,
+  const Polyhedron& shell,
+  double scale,
+  const Vec3& phase,
+  RoundLattice lattice,
+  double spacing
+) {
+  const int limit = static_cast<int>(std::ceil((scale + 1.0) / spacing)) + 2;
+  std::vector<Vec3> cells;
+  for (int x = -limit; x <= limit; ++x) for (int y = -limit; y <= limit; ++y) for (int z = -limit; z <= limit; ++z) {
+    if (!round_lattice_point(lattice, x, y, z)) continue;
+    const Vec3 position{
+      (static_cast<double>(x) + phase.x) * spacing,
+      (static_cast<double>(y) + phase.y) * spacing,
+      (static_cast<double>(z) + phase.z) * spacing
+    };
+    bool inside = true;
+    for (const auto& face : shell.faces) {
+      for (const auto& vertex : piece.vertices) {
+        if (dot(face.normal, vertex + position) > scale * face.d + 1e-12) { inside = false; break; }
+      }
+      if (!inside) break;
+    }
+    if (inside) cells.push_back(position);
+  }
+  return cells;
+}
+
 static Packing piece_in_shell_lattice_initial(
   const Polyhedron& piece,
   const Polyhedron& shell,
@@ -307,6 +365,29 @@ static Packing piece_in_shell_lattice_initial(
         best_scale = hi;
         best_cells = std::move(cells);
         best_rotation = rotation;
+      }
+    }
+
+    // Round pieces often waste the corners of their AABB cells. Compete the
+    // rectangular seed against face- and body-centred sphere-like lattices.
+    for (const RoundLattice pattern : {RoundLattice::fcc, RoundLattice::bcc}) {
+      const double spacing = round_lattice_spacing(lattice, pattern);
+      for (int px : {0, 1}) for (int py : {0, 1}) for (int pz : {0, 1}) {
+        const Vec3 phase{0.5 * static_cast<double>(px), 0.5 * static_cast<double>(py), 0.5 * static_cast<double>(pz)};
+        double lo = 0.0;
+        double hi = std::max(1.0, 1.35 * std::cbrt(static_cast<double>(cfg.count)));
+        while (contained_round_lattice_cells(lattice, shell, hi, phase, pattern, spacing).size() < static_cast<std::size_t>(cfg.count)) hi *= 1.5;
+        for (int step = 0; step < 36; ++step) {
+          const double mid = 0.5 * (lo + hi);
+          if (contained_round_lattice_cells(lattice, shell, mid, phase, pattern, spacing).size() >= static_cast<std::size_t>(cfg.count)) hi = mid;
+          else lo = mid;
+        }
+        auto cells = contained_round_lattice_cells(lattice, shell, hi, phase, pattern, spacing);
+        if (hi < best_scale) {
+          best_scale = hi;
+          best_cells = std::move(cells);
+          best_rotation = rotation;
+        }
       }
     }
   }
