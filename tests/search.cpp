@@ -2,12 +2,22 @@
 #include "search.hpp"
 
 #include <cstdlib>
+#include <cmath>
 #include <iostream>
 
 using namespace polyjam;
 
 int main() {
   const auto cube = builtin_polyhedron("cube");
+  Packing single_cube;
+  single_cube.scale = 1.0;
+  single_cube.poses.resize(1);
+  const Metrics single_metrics = evaluate(cube, cube, single_cube);
+  const double expected_cube_volume = 8.0 / (3.0 * std::sqrt(3.0));
+  if (std::abs(single_metrics.hull_volume - expected_cube_volume) > 1e-8) {
+    std::cerr << "FAIL: configuration hull volume for one cube\n";
+    return EXIT_FAILURE;
+  }
   SearchConfig cfg;
   cfg.count = 50;
   cfg.seconds = 0.02;

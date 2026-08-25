@@ -15,6 +15,90 @@
 
 namespace polyjam {
 
+namespace {
+
+struct HullTriangle { int a; int b; int c; };
+
+double configuration_hull_volume(const std::vector<std::vector<Vec3>>& pieces) {
+  std::vector<Vec3> points;
+  for (const auto& vertices : pieces) points.insert(points.end(), vertices.begin(), vertices.end());
+  if (points.size() < 4) return 0.0;
+
+  const int p0 = static_cast<int>(std::min_element(points.begin(), points.end(), [](const Vec3& a, const Vec3& b) {
+    return a.x < b.x;
+  }) - points.begin());
+  int p1 = -1;
+  double best = 0.0;
+  for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+    const double d = norm2(points[static_cast<std::size_t>(i)] - points[static_cast<std::size_t>(p0)]);
+    if (d > best) { best = d; p1 = i; }
+  }
+  if (p1 < 0 || best < 1e-20) return 0.0;
+
+  int p2 = -1;
+  best = 0.0;
+  const Vec3 line = points[static_cast<std::size_t>(p1)] - points[static_cast<std::size_t>(p0)];
+  for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+    const double d = norm2(cross(line, points[static_cast<std::size_t>(i)] - points[static_cast<std::size_t>(p0)]));
+    if (d > best) { best = d; p2 = i; }
+  }
+  if (p2 < 0 || best < 1e-20) return 0.0;
+
+  int p3 = -1;
+  best = 0.0;
+  const Vec3 plane = cross(points[static_cast<std::size_t>(p1)] - points[static_cast<std::size_t>(p0)],
+                           points[static_cast<std::size_t>(p2)] - points[static_cast<std::size_t>(p0)]);
+  for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+    const double d = std::abs(dot(plane, points[static_cast<std::size_t>(i)] - points[static_cast<std::size_t>(p0)]));
+    if (d > best) { best = d; p3 = i; }
+  }
+  if (p3 < 0 || best < 1e-14) return 0.0;
+
+  const Vec3 interior = (points[static_cast<std::size_t>(p0)] + points[static_cast<std::size_t>(p1)] +
+                         points[static_cast<std::size_t>(p2)] + points[static_cast<std::size_t>(p3)]) / 4.0;
+  auto outward = [&](HullTriangle f) {
+    const Vec3& a = points[static_cast<std::size_t>(f.a)];
+    const Vec3 n = cross(points[static_cast<std::size_t>(f.b)] - a, points[static_cast<std::size_t>(f.c)] - a);
+    if (dot(n, interior - a) > 0.0) std::swap(f.b, f.c);
+    return f;
+  };
+  std::vector<HullTriangle> faces{
+    outward({p0,p1,p2}), outward({p0,p3,p1}), outward({p0,p2,p3}), outward({p1,p3,p2})
+  };
+
+  for (int p = 0; p < static_cast<int>(points.size()); ++p) {
+    std::vector<bool> visible(faces.size(), false);
+    bool any = false;
+    for (std::size_t i = 0; i < faces.size(); ++i) {
+      const auto& f = faces[i];
+      const Vec3& a = points[static_cast<std::size_t>(f.a)];
+      const Vec3 n = cross(points[static_cast<std::size_t>(f.b)] - a, points[static_cast<std::size_t>(f.c)] - a);
+      visible[i] = dot(n, points[static_cast<std::size_t>(p)] - a) > 1e-10 * std::max(1.0, norm(n));
+      any = any || visible[i];
+    }
+    if (!any) continue;
+    std::vector<std::pair<int,int>> horizon;
+    auto add_edge = [&](int a, int b) {
+      const auto reverse = std::find(horizon.begin(), horizon.end(), std::pair<int,int>{b,a});
+      if (reverse != horizon.end()) horizon.erase(reverse); else horizon.emplace_back(a,b);
+    };
+    std::vector<HullTriangle> kept;
+    for (std::size_t i = 0; i < faces.size(); ++i) {
+      if (!visible[i]) kept.push_back(faces[i]);
+      else { add_edge(faces[i].a, faces[i].b); add_edge(faces[i].b, faces[i].c); add_edge(faces[i].c, faces[i].a); }
+    }
+    faces = std::move(kept);
+    for (const auto& edge : horizon) faces.push_back(outward({edge.first, edge.second, p}));
+  }
+
+  double volume = 0.0;
+  for (const auto& f : faces) volume += dot(points[static_cast<std::size_t>(f.a)],
+    cross(points[static_cast<std::size_t>(f.b)], points[static_cast<std::size_t>(f.c)])) / 6.0;
+  return std::abs(volume);
+}
+
+} // namespace
+
 Metrics evaluate(const Polyhedron& piece, const Polyhedron& shell, const Packing& p, double clearance) {
   Metrics m;
   const int n = static_cast<int>(p.poses.size());
@@ -41,6 +125,7 @@ Metrics evaluate(const Polyhedron& piece, const Polyhedron& shell, const Packing
     }
   }
   m.violation = m.containment_sq + m.overlap_sq;
+  m.hull_volume = configuration_hull_volume(world);
   return m;
 }
 
@@ -237,8 +322,17 @@ static Packing piece_in_shell_lattice_initial(
   return p;
 }
 
-static double score(const Packing& p, double penalty) {
+static double primary_score(const Packing& p, double penalty) {
   return p.scale + penalty * p.metrics.violation;
+}
+
+static double annealing_delta(const Packing& current, const Packing& proposal, double penalty) {
+  const double primary = primary_score(proposal, penalty) - primary_score(current, penalty);
+  if (std::abs(primary) > 1e-12) return primary;
+  // Strictly secondary: hull volume influences only moves tied on shell scale
+  // and constraint violation, never trading a larger target shell for compactness.
+  const double normalization = std::max(1.0, current.scale * current.scale * current.scale);
+  return 0.1 * (proposal.metrics.hull_volume - current.metrics.hull_volume) / normalization;
 }
 
 static Packing one_search(
@@ -351,9 +445,7 @@ static Packing one_search(
     }
 
     proposal.metrics = evaluate(piece, shell, proposal, cfg.clearance);
-    const double old_score = score(current, penalty);
-    const double new_score = score(proposal, penalty);
-    const double delta = new_score - old_score;
+    const double delta = annealing_delta(current, proposal, penalty);
     const bool accept = delta <= 0.0 || rand01(rng) < std::exp(-delta/std::max(1e-9,temperature));
     ++window_attempts;
     if (accept) {
@@ -367,7 +459,10 @@ static Packing one_search(
     }
 
     const bool feasible = current.metrics.max_violation <= cfg.tolerance;
-    if (feasible && (!have_feasible || current.scale < best_feasible.scale)) {
+    const bool tighter = !have_feasible || current.scale < best_feasible.scale - 1e-12;
+    const bool same_shell_more_compact = have_feasible && std::abs(current.scale - best_feasible.scale) <= 1e-12 &&
+      current.metrics.hull_volume < best_feasible.metrics.hull_volume;
+    if (feasible && (tighter || same_shell_more_compact)) {
       best_feasible = current;
       have_feasible = true;
       best_feasible.feasible = true;
@@ -409,7 +504,8 @@ Packing search(const Polyhedron& piece, const Polyhedron& shell, const SearchCon
 
   auto publish = [&](const Packing& candidate) {
     std::lock_guard lock(best_mutex);
-    if (!have_global || (candidate.feasible && (!global_best.feasible || candidate.scale < global_best.scale)) ||
+    if (!have_global || (candidate.feasible && (!global_best.feasible || candidate.scale < global_best.scale - 1e-12 ||
+          (std::abs(candidate.scale - global_best.scale) <= 1e-12 && candidate.metrics.hull_volume < global_best.metrics.hull_volume))) ||
         (!candidate.feasible && !global_best.feasible && candidate.metrics.violation < global_best.metrics.violation)) {
       global_best = candidate;
       have_global = true;
@@ -475,6 +571,7 @@ void write_result_json(
       << ",\"maxViolation\":" << result.metrics.max_violation
       << ",\"containmentSq\":" << result.metrics.containment_sq
       << ",\"overlapSq\":" << result.metrics.overlap_sq
+      << ",\"hullVolume\":" << result.metrics.hull_volume
       << ",\"overlappingPairs\":" << result.metrics.overlapping_pairs << "},\n";
   out << "  \"search\": {\"seconds\":" << config.seconds << ",\"threads\":" << config.threads
       << ",\"seed\":" << config.seed << ",\"iterations\":" << result.iterations << "},\n";
@@ -497,6 +594,7 @@ std::string progress_json(const Packing& p, const char* type) {
       << ",\"feasible\":" << (p.feasible?"true":"false")
       << ",\"maxViolation\":" << p.metrics.max_violation
       << ",\"violation\":" << p.metrics.violation
+      << ",\"hullVolume\":" << p.metrics.hull_volume
       << ",\"iterations\":" << p.iterations
       << ",\"elapsed\":" << p.elapsed << "}";
   return out.str();
