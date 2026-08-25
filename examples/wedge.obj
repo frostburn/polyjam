@@ -1,0 +1,9 @@
+# Deliberately asymmetric convex test piece. Faces are optional; only vertices are read.
+v -1 -1 -0.7
+v  1 -1 -0.7
+v  1  1 -0.7
+v -1  1 -0.7
+v -0.65 -0.65 1
+v  0.65 -0.65 1
+v  0.25  0.75 1
+v -0.25  0.75 1

@@ -1,0 +1,7 @@
+build/
+web/results/job-*.json
+*.log
+.DS_Store
+
+__pycache__/
+*.pyc
