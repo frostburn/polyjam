@@ -19,5 +19,12 @@ int main() {
     std::cerr << "FAIL: expected a feasible 50-cube construction at scale 4\n";
     return EXIT_FAILURE;
   }
+
+  const auto dodeca = builtin_polyhedron("dodeca");
+  const Packing dodeca_result = search(cube, dodeca, cfg);
+  if (!dodeca_result.feasible || dodeca_result.scale > 4.2 || dodeca_result.poses.size() != 50) {
+    std::cerr << "FAIL: expected a dense feasible 50-cube dodecahedron construction\n";
+    return EXIT_FAILURE;
+  }
   std::cout << "cube lattice search test passed\n";
 }

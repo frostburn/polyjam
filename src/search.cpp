@@ -134,6 +134,74 @@ static Packing cube_grid_initial(const SearchConfig& cfg, std::mt19937_64& rng) 
   return p;
 }
 
+static std::vector<Vec3> contained_cube_lattice_cells(
+  const Polyhedron& shell,
+  double scale,
+  const Vec3& phase
+) {
+  const double half_width = 1.0 / std::sqrt(3.0);
+  const double width = 2.0 * half_width;
+  const int limit = static_cast<int>(std::ceil((scale + 1.0) / width)) + 1;
+  std::vector<Vec3> cells;
+  for (int x = -limit; x <= limit; ++x) for (int y = -limit; y <= limit; ++y) for (int z = -limit; z <= limit; ++z) {
+    const Vec3 center{
+      (static_cast<double>(x) + phase.x) * width,
+      (static_cast<double>(y) + phase.y) * width,
+      (static_cast<double>(z) + phase.z) * width
+    };
+    bool inside = true;
+    for (const auto& face : shell.faces) {
+      // Support of an axis-aligned cube in the direction of this shell plane.
+      const double support = half_width *
+        (std::abs(face.normal.x) + std::abs(face.normal.y) + std::abs(face.normal.z));
+      if (dot(face.normal, center) + support > scale * face.d + 1e-12) {
+        inside = false;
+        break;
+      }
+    }
+    if (inside) cells.push_back(center);
+  }
+  return cells;
+}
+
+static Packing cube_in_shell_lattice_initial(
+  const Polyhedron& shell,
+  const SearchConfig& cfg,
+  std::mt19937_64& rng
+) {
+  double best_scale = std::numeric_limits<double>::infinity();
+  std::vector<Vec3> best_cells;
+
+  // Trying both vertex- and cell-centered phases on every axis matters for
+  // shells with sloping faces, and is cheap compared with the subsequent SAT
+  // search. Each phase is independently tightened by binary search.
+  for (int px : {0, 1}) for (int py : {0, 1}) for (int pz : {0, 1}) {
+    const Vec3 phase{0.5 * static_cast<double>(px), 0.5 * static_cast<double>(py), 0.5 * static_cast<double>(pz)};
+    double lo = 0.0;
+    double hi = std::max(1.0, 1.35 * std::cbrt(static_cast<double>(cfg.count)));
+    while (contained_cube_lattice_cells(shell, hi, phase).size() < static_cast<std::size_t>(cfg.count)) hi *= 1.5;
+    for (int step = 0; step < 55; ++step) {
+      const double mid = 0.5 * (lo + hi);
+      if (contained_cube_lattice_cells(shell, mid, phase).size() >= static_cast<std::size_t>(cfg.count)) hi = mid;
+      else lo = mid;
+    }
+    auto cells = contained_cube_lattice_cells(shell, hi, phase);
+    if (hi < best_scale) {
+      best_scale = hi;
+      best_cells = std::move(cells);
+    }
+  }
+
+  std::shuffle(best_cells.begin(), best_cells.end(), rng);
+  Packing p;
+  p.scale = best_scale;
+  p.poses.resize(static_cast<std::size_t>(cfg.count));
+  for (int i = 0; i < cfg.count; ++i) {
+    p.poses[static_cast<std::size_t>(i)].position = best_cells[static_cast<std::size_t>(i)];
+  }
+  return p;
+}
+
 static double score(const Packing& p, double penalty) {
   return p.scale + penalty * p.metrics.violation;
 }
@@ -150,8 +218,11 @@ static Packing one_search(
   std::mt19937_64 rng(seed);
   const double heuristic = std::max(1.25, 1.35 * std::cbrt(static_cast<double>(cfg.count)) * piece.radius / shell.radius);
   const double start_scale = cfg.start_scale > 0.0 ? cfg.start_scale : heuristic;
-  const bool cube_in_cube = piece.name == "cube" && shell.name == "cube" && cfg.clearance == 0.0;
-  Packing current = cube_in_cube ? cube_grid_initial(cfg, rng) : random_initial(shell, cfg, start_scale, rng);
+  const bool lattice_seed = piece.name == "cube" && cfg.clearance == 0.0;
+  Packing current;
+  if (lattice_seed && shell.name == "cube") current = cube_grid_initial(cfg, rng);
+  else if (lattice_seed) current = cube_in_shell_lattice_initial(shell, cfg, rng);
+  else current = random_initial(shell, cfg, start_scale, rng);
   current.metrics = evaluate(piece, shell, current, cfg.clearance);
 
   Packing best_any = current;
