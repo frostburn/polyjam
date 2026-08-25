@@ -264,12 +264,18 @@ static Packing one_search(
   Packing best_feasible;
   bool have_feasible = false;
 
-  double trans_sigma = 0.20 * start_scale;
-  double rot_sigma = 0.30;
-  double scale_sigma = 0.015 * start_scale;
-  double temperature = 0.10;
+  // Lattice seeds are already in contact, so begin with fine jiggling rather
+  // than jumps on the scale of the whole container. The acceptance controller
+  // below grows these steps if there is unexpectedly plenty of free space.
+  double trans_sigma = 0.045 * piece.radius;
+  double rot_sigma = 0.07;
+  double scale_sigma = 0.004 * start_scale;
+  double temperature = 0.035;
   double penalty = 200.0;
   std::uint64_t iter = 0;
+  std::uint64_t window_attempts = 0;
+  std::uint64_t window_accepted = 0;
+  std::uint64_t last_improvement = 0;
   auto t0 = std::chrono::steady_clock::now();
 
   // Do not wait for a random move before retaining a constructive seed.  This
@@ -284,7 +290,7 @@ static Packing one_search(
   while (std::chrono::steady_clock::now() < deadline) {
     ++iter;
     ++total_iterations;
-    if ((iter % 12000) == 0) {
+    if ((iter % 4000) == 0) {
       // Reheat and tighten constraint pressure. This avoids permanently freezing into one contact graph.
       temperature = std::max(0.015, temperature * 0.85);
       penalty = std::min(2.0e6, penalty * 1.7);
@@ -294,9 +300,30 @@ static Packing one_search(
       if (rand01(rng) < 0.22) temperature *= 2.5;
     }
 
+    if ((iter % 500) == 0 && window_attempts != 0) {
+      const double acceptance = static_cast<double>(window_accepted) / static_cast<double>(window_attempts);
+      const double factor = acceptance < 0.16 ? 0.78 : (acceptance > 0.48 ? 1.18 : 1.0);
+      trans_sigma = std::clamp(trans_sigma * factor, 0.0015 * piece.radius, 0.18 * piece.radius);
+      rot_sigma = std::clamp(rot_sigma * factor, 0.002, 0.28);
+      scale_sigma = std::clamp(scale_sigma * factor, 0.0002 * start_scale, 0.02 * start_scale);
+      window_attempts = 0;
+      window_accepted = 0;
+    }
+
+    // If a contact topology has stopped improving, return to the best known
+    // construction and anneal a slightly compressed copy. This is a random
+    // restart near useful geometry, not a return to an overlapping cloud.
+    if (have_feasible && iter - last_improvement > 6000) {
+      current = best_feasible;
+      current.scale = std::max(0.25, current.scale * (0.998 + 0.001 * rand01(rng)));
+      current.metrics = evaluate(piece, shell, current, cfg.clearance);
+      temperature = std::max(temperature, 0.07);
+      last_improvement = iter;
+    }
+
     Packing proposal = current;
     const double move = rand01(rng);
-    if (move < 0.88) {
+    if (move < 0.76) {
       const int i = static_cast<int>(rng() % static_cast<std::uint64_t>(cfg.count));
       auto& pose = proposal.poses[static_cast<std::size_t>(i)];
       if (rand01(rng) < 0.62) {
@@ -304,6 +331,19 @@ static Packing one_search(
       } else {
         const Quat dq = axis_angle(random_unit(rng), normal01(rng) * rot_sigma);
         pose.rotation = normalized(dq * pose.rotation);
+      }
+    } else if (move < 0.90) {
+      // Jiggle a small random neighbourhood together. Multi-piece proposals
+      // can cross barriers that reject every intermediate one-piece move.
+      const int moved = std::min(cfg.count, 2 + static_cast<int>(rng() % 5));
+      for (int k = 0; k < moved; ++k) {
+        const int i = static_cast<int>(rng() % static_cast<std::uint64_t>(cfg.count));
+        auto& pose = proposal.poses[static_cast<std::size_t>(i)];
+        pose.position += Vec3{normal01(rng),normal01(rng),normal01(rng)} * (0.45 * trans_sigma);
+        if (rand01(rng) < 0.35) {
+          const Quat dq = axis_angle(random_unit(rng), normal01(rng) * (0.45 * rot_sigma));
+          pose.rotation = normalized(dq * pose.rotation);
+        }
       }
     } else {
       const double shrink_bias = have_feasible ? -0.35*scale_sigma : 0.0;
@@ -315,7 +355,11 @@ static Packing one_search(
     const double new_score = score(proposal, penalty);
     const double delta = new_score - old_score;
     const bool accept = delta <= 0.0 || rand01(rng) < std::exp(-delta/std::max(1e-9,temperature));
-    if (accept) current = std::move(proposal);
+    ++window_attempts;
+    if (accept) {
+      current = std::move(proposal);
+      ++window_accepted;
+    }
 
     if (current.metrics.violation < best_any.metrics.violation ||
         (current.metrics.violation <= best_any.metrics.violation*1.000001 && current.scale < best_any.scale)) {
@@ -330,6 +374,7 @@ static Packing one_search(
       best_feasible.iterations = iter;
       best_feasible.elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
       publish(best_feasible);
+      last_improvement = iter;
       // Once feasible, push gently on the walls immediately.
       current.scale = std::max(0.25, current.scale * 0.9985);
       current.metrics = evaluate(piece, shell, current, cfg.clearance);
