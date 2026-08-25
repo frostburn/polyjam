@@ -85,6 +85,55 @@ static Packing random_initial(const Polyhedron& shell, const SearchConfig& cfg, 
   return p;
 }
 
+static Packing cube_grid_initial(const SearchConfig& cfg, std::mt19937_64& rng) {
+  // A random cloud is an especially poor starting point for cube-in-cube
+  // instances: at useful densities almost every cube overlaps several others.
+  // Start those searches from an exact lattice construction instead.  Search
+  // all integer box dimensions because, for non-perfect cubes, a rectangular
+  // grid can be substantially tighter than ceil(cuberoot(n)) in every axis.
+  int best_x = cfg.count;
+  int best_y = 1;
+  int best_z = 1;
+  int best_side = cfg.count;
+  int best_capacity = cfg.count;
+  for (int x = 1; x <= cfg.count; ++x) {
+    for (int y = x; y <= cfg.count; ++y) {
+      const int xy = x * y;
+      const int z = (cfg.count + xy - 1) / xy;
+      if (z < y) continue;
+      const int side = z;
+      const int capacity = xy * z;
+      if (side < best_side || (side == best_side && capacity < best_capacity)) {
+        best_x = x;
+        best_y = y;
+        best_z = z;
+        best_side = side;
+        best_capacity = capacity;
+      }
+    }
+  }
+
+  std::vector<Vec3> cells;
+  cells.reserve(static_cast<std::size_t>(best_capacity));
+  const double width = 2.0 / std::sqrt(3.0); // normalized cube edge length
+  for (int x = 0; x < best_x; ++x) for (int y = 0; y < best_y; ++y) for (int z = 0; z < best_z; ++z) {
+    cells.push_back({
+      (static_cast<double>(x) - 0.5 * static_cast<double>(best_x - 1)) * width,
+      (static_cast<double>(y) - 0.5 * static_cast<double>(best_y - 1)) * width,
+      (static_cast<double>(z) - 0.5 * static_cast<double>(best_z - 1)) * width
+    });
+  }
+  // Spread unused cells throughout the box rather than leaving a conspicuous
+  // empty slab. Different workers consequently explore different contact graphs.
+  std::shuffle(cells.begin(), cells.end(), rng);
+
+  Packing p;
+  p.scale = static_cast<double>(best_side);
+  p.poses.resize(static_cast<std::size_t>(cfg.count));
+  for (int i = 0; i < cfg.count; ++i) p.poses[static_cast<std::size_t>(i)].position = cells[static_cast<std::size_t>(i)];
+  return p;
+}
+
 static double score(const Packing& p, double penalty) {
   return p.scale + penalty * p.metrics.violation;
 }
@@ -101,7 +150,8 @@ static Packing one_search(
   std::mt19937_64 rng(seed);
   const double heuristic = std::max(1.25, 1.35 * std::cbrt(static_cast<double>(cfg.count)) * piece.radius / shell.radius);
   const double start_scale = cfg.start_scale > 0.0 ? cfg.start_scale : heuristic;
-  Packing current = random_initial(shell, cfg, start_scale, rng);
+  const bool cube_in_cube = piece.name == "cube" && shell.name == "cube" && cfg.clearance == 0.0;
+  Packing current = cube_in_cube ? cube_grid_initial(cfg, rng) : random_initial(shell, cfg, start_scale, rng);
   current.metrics = evaluate(piece, shell, current, cfg.clearance);
 
   Packing best_any = current;
@@ -115,6 +165,15 @@ static Packing one_search(
   double penalty = 200.0;
   std::uint64_t iter = 0;
   auto t0 = std::chrono::steady_clock::now();
+
+  // Do not wait for a random move before retaining a constructive seed.  This
+  // also guarantees useful output for very short interactive searches.
+  if (current.metrics.max_violation <= cfg.tolerance) {
+    best_feasible = current;
+    have_feasible = true;
+    best_feasible.feasible = true;
+    publish(best_feasible);
+  }
 
   while (std::chrono::steady_clock::now() < deadline) {
     ++iter;
