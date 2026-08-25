@@ -26,5 +26,13 @@ int main() {
     std::cerr << "FAIL: expected a dense feasible 50-cube dodecahedron construction\n";
     return EXIT_FAILURE;
   }
-  std::cout << "cube lattice search test passed\n";
+
+  const auto tetra = builtin_polyhedron("tetra");
+  cfg.count = 30;
+  const Packing tetra_result = search(tetra, dodeca, cfg);
+  if (!tetra_result.feasible || tetra_result.scale > 3.5 || tetra_result.poses.size() != 30) {
+    std::cerr << "FAIL: expected a dense feasible tetrahedron lattice construction\n";
+    return EXIT_FAILURE;
+  }
+  std::cout << "lattice search test passed\n";
 }
