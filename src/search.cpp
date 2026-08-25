@@ -335,6 +335,15 @@ static double annealing_delta(const Packing& current, const Packing& proposal, d
   return 0.1 * (proposal.metrics.hull_volume - current.metrics.hull_volume) / normalization;
 }
 
+static void order_crystal_core_first(Packing& packing) {
+  // Pieces are identical, so reordering poses has no geometric effect. Keeping
+  // the outer pieces at the end gives the annealer a stable, seed-independent
+  // way to treat a small boundary layer as freely mobile.
+  std::sort(packing.poses.begin(), packing.poses.end(), [](const Pose& a, const Pose& b) {
+    return norm2(a.position) < norm2(b.position);
+  });
+}
+
 static Packing one_search(
   const Polyhedron& piece,
   const Polyhedron& shell,
@@ -352,6 +361,7 @@ static Packing one_search(
   if (lattice_seed && piece.name == "cube" && shell.name == "cube") current = cube_grid_initial(cfg, rng);
   else if (lattice_seed) current = piece_in_shell_lattice_initial(piece, shell, cfg, rng);
   else current = random_initial(shell, cfg, start_scale, rng);
+  if (lattice_seed) order_crystal_core_first(current);
   current.metrics = evaluate(piece, shell, current, cfg.clearance);
 
   Packing best_any = current;
@@ -370,6 +380,14 @@ static Packing one_search(
   std::uint64_t window_attempts = 0;
   std::uint64_t window_accepted = 0;
   std::uint64_t last_improvement = 0;
+  const int free_piece_count = lattice_seed ? std::min(cfg.count, std::min(6, std::max(2, cfg.count / 5))) : cfg.count;
+  const int free_piece_begin = cfg.count - free_piece_count;
+  auto random_piece = [&](bool prefer_free) {
+    if (prefer_free && rand01(rng) < 0.72) {
+      return free_piece_begin + static_cast<int>(rng() % static_cast<std::uint64_t>(free_piece_count));
+    }
+    return static_cast<int>(rng() % static_cast<std::uint64_t>(cfg.count));
+  };
   auto t0 = std::chrono::steady_clock::now();
 
   // Do not wait for a random move before retaining a constructive seed.  This
@@ -418,12 +436,13 @@ static Packing one_search(
     Packing proposal = current;
     const double move = rand01(rng);
     if (move < 0.76) {
-      const int i = static_cast<int>(rng() % static_cast<std::uint64_t>(cfg.count));
+      const int i = random_piece(lattice_seed);
       auto& pose = proposal.poses[static_cast<std::size_t>(i)];
+      const double mobility = lattice_seed && i >= free_piece_begin ? 2.4 : 1.0;
       if (rand01(rng) < 0.62) {
-        pose.position += Vec3{normal01(rng),normal01(rng),normal01(rng)} * trans_sigma;
+        pose.position += Vec3{normal01(rng),normal01(rng),normal01(rng)} * (mobility * trans_sigma);
       } else {
-        const Quat dq = axis_angle(random_unit(rng), normal01(rng) * rot_sigma);
+        const Quat dq = axis_angle(random_unit(rng), normal01(rng) * (mobility * rot_sigma));
         pose.rotation = normalized(dq * pose.rotation);
       }
     } else if (move < 0.90) {
@@ -431,11 +450,14 @@ static Packing one_search(
       // can cross barriers that reject every intermediate one-piece move.
       const int moved = std::min(cfg.count, 2 + static_cast<int>(rng() % 5));
       for (int k = 0; k < moved; ++k) {
-        const int i = static_cast<int>(rng() % static_cast<std::uint64_t>(cfg.count));
+        // Always include a mobile boundary piece, then mix in crystal-core
+        // pieces so the interface can reconstruct instead of merely rattling.
+        const int i = random_piece(lattice_seed && k == 0);
         auto& pose = proposal.poses[static_cast<std::size_t>(i)];
-        pose.position += Vec3{normal01(rng),normal01(rng),normal01(rng)} * (0.45 * trans_sigma);
+        const double mobility = lattice_seed && i >= free_piece_begin ? 1.8 : 1.0;
+        pose.position += Vec3{normal01(rng),normal01(rng),normal01(rng)} * (0.45 * mobility * trans_sigma);
         if (rand01(rng) < 0.35) {
-          const Quat dq = axis_angle(random_unit(rng), normal01(rng) * (0.45 * rot_sigma));
+          const Quat dq = axis_angle(random_unit(rng), normal01(rng) * (0.45 * mobility * rot_sigma));
           pose.rotation = normalized(dq * pose.rotation);
         }
       }
@@ -476,8 +498,8 @@ static Packing one_search(
     }
 
     // Rare large shake: move the worst-looking piece to a new region without discarding the whole contact graph.
-    if ((iter % 5000) == 0 && rand01(rng) < 0.18) {
-      const int i = static_cast<int>(rng() % static_cast<std::uint64_t>(cfg.count));
+    if ((iter % 2500) == 0 && rand01(rng) < (lattice_seed ? 0.45 : 0.18)) {
+      const int i = random_piece(lattice_seed);
       current.poses[static_cast<std::size_t>(i)].position = random_center_in_shell(shell, current.scale*0.85, rng);
       current.poses[static_cast<std::size_t>(i)].rotation = random_q(rng);
       current.metrics = evaluate(piece, shell, current, cfg.clearance);

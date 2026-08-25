@@ -44,5 +44,14 @@ int main() {
     std::cerr << "FAIL: expected a dense feasible tetrahedron lattice construction\n";
     return EXIT_FAILURE;
   }
+
+  const auto icosa = builtin_polyhedron("icosa");
+  cfg.count = 17;
+  cfg.seed = 19;
+  const Packing threshold_result = search(tetra, icosa, cfg);
+  if (!threshold_result.feasible || threshold_result.scale > 3.1 || threshold_result.poses.size() != 17) {
+    std::cerr << "FAIL: expected a feasible tetrahedron crystal-core threshold construction\n";
+    return EXIT_FAILURE;
+  }
   std::cout << "lattice search test passed\n";
 }
