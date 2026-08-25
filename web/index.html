@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Polyjam · packing lab</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; background:#07101d; color:#dce8f5 }
+    * { box-sizing:border-box }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 70% 10%,#172b45 0,#0a1525 34%,#060d18 78%); }
+    button,input,select { font:inherit }
+    button,select,input[type=number] { color:#e8f2fb; background:#122238; border:1px solid #304762; border-radius:7px; padding:7px 9px }
+    button { cursor:pointer; font-weight:650; background:#246ea4; border-color:#3d91c7 }
+    button:hover { background:#2b7eb8 } button:disabled { opacity:.5; cursor:wait }
+    .app { display:grid; grid-template-columns:320px minmax(0,1fr); min-height:100vh }
+    aside { padding:22px; overflow:auto; border-right:1px solid #26374a; background:rgba(8,17,29,.9) }
+    header { margin-bottom:22px } h1 { margin:0; font-size:23px; letter-spacing:-.03em } h1 span { color:#65c7ed }
+    header p,.muted { color:#8295aa } header p { margin:4px 0 0 }
+    fieldset { border:0; border-top:1px solid #26374a; padding:17px 0 5px; margin:0 0 8px }
+    legend { padding:0 9px 0 0; color:#a9bed2; font-size:11px; font-weight:750; letter-spacing:.1em; text-transform:uppercase }
+    label { display:grid; gap:5px; color:#9fb2c6; font-size:12px }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px }
+    .wide { grid-column:1/-1 } input,select { min-width:0; width:100% }
+    input[type=range] { padding:0; accent-color:#66c4e8 }
+    .range-label { display:flex; justify-content:space-between }
+    .checks { display:flex; gap:18px; margin:8px 0 3px }.checks label { display:flex; align-items:center; gap:7px }.checks input { width:auto }
+    .actions { display:flex; gap:8px }.actions button:first-child { flex:1 }
+    #job { min-height:20px; margin:8px 0 0; font-size:12px; color:#83a6c3 }
+    main { min-width:0; display:grid; grid-template-rows:auto minmax(360px,1fr) auto; padding:22px; gap:14px }
+    .toolbar { display:flex; align-items:center; gap:10px; min-width:0 }.toolbar select { max-width:370px }.toolbar #refresh { background:#152941 }
+    .file-button { display:inline-flex; align-items:center; white-space:nowrap; cursor:pointer; background:#152941; border:1px solid #304762; border-radius:7px; padding:7px 10px; font-weight:650 }.file-button:hover { background:#1b3551 }.file-button input { display:none }
+    #badge { margin-left:auto; color:#8aa1b6; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+    .viewport { position:relative; min-height:0; overflow:hidden; border:1px solid #2a4058; border-radius:14px; background:radial-gradient(circle at 50% 43%,rgba(31,65,93,.56),rgba(7,16,29,.92) 64%); box-shadow:0 22px 60px rgba(0,0,0,.28) }
+    #view { display:block; width:100%; height:100%; min-height:360px; touch-action:none; cursor:grab } #view.dragging { cursor:grabbing }
+    .hint { position:absolute; left:16px; bottom:13px; pointer-events:none; color:#7890a6; font-size:12px }
+    .stats { display:grid; grid-template-columns:repeat(4,minmax(90px,1fr)); gap:10px }
+    .stat { padding:11px 13px; border:1px solid #24394f; border-radius:9px; background:rgba(11,24,40,.76) }.stat small { display:block; color:#7890a6; text-transform:uppercase; font-size:10px; letter-spacing:.08em }.stat strong { display:block; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+    .good { color:#79ddb1 }.bad { color:#ff8493 } #selected,#note { grid-column:1/-1; color:#9db2c6 } #note:empty { display:none }
+    @media(max-width:800px) { .app { grid-template-columns:1fr }.app aside { border-right:0; border-bottom:1px solid #26374a } main { min-height:680px }.stats { grid-template-columns:1fr 1fr }.toolbar { flex-wrap:wrap } #badge { width:100%; margin-left:0 } }
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <header><h1>poly<span>jam</span></h1><p>Convex packing search lab</p></header>
+    <fieldset>
+      <legend>Search</legend>
+      <div class="row"><label>Piece<select id="piece"></select></label><label>Shell<select id="shell"></select></label></div>
+      <div class="row"><label>Piece count<input id="count" type="number" min="1" max="80" value="9"></label><label>Seconds<input id="seconds" type="number" min="0.25" value="10" step="0.25"></label></div>
+      <div class="row"><label>Threads<input id="threads" type="number" min="1" max="128" value="4"></label><label>Seed<input id="seed" type="number" min="0" value="1"></label></div>
+      <div class="row"><label>Tolerance<input id="tolerance" type="number" min="0.0000000001" value="0.00001" step="0.00001"></label><label>Clearance<input id="clearance" type="number" min="0" value="0" step="0.001"></label></div>
+      <div class="row"><label class="wide">Starting scale (0 = automatic)<input id="startScale" type="number" min="0" value="0" step="0.1"></label></div>
+      <div class="actions"><button id="search">Start search</button></div><p id="job"></p>
+    </fieldset>
+    <fieldset>
+      <legend>View</legend>
+      <label><span class="range-label"><span>Shell opacity</span><output id="shellOpacityOut">18%</output></span><input id="shellOpacity" type="range" min="0" max="1" value="0.18" step="0.01"></label>
+      <label><span class="range-label"><span>Explode pieces</span><output id="explodeOut">0%</output></span><input id="explode" type="range" min="0" max="1" value="0" step="0.01"></label>
+      <label><span class="range-label"><span>Z slice</span><output id="sliceOut">100%</output></span><input id="slice" type="range" min="-1" max="1" value="1" step="0.01"></label>
+      <div class="checks"><label><input id="faces" type="checkbox" checked> Faces</label><label><input id="edges" type="checkbox" checked> Edges</label></div>
+    </fieldset>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <select id="results" aria-label="Saved results"><option>Loading results…</option></select>
+      <button id="refresh" type="button">Refresh</button>
+      <label class="file-button">Open JSON<input id="file" type="file" accept="application/json,.json"></label>
+      <span id="badge">No result loaded</span>
+    </div>
+    <div class="viewport"><canvas id="view" aria-label="Interactive 3D packing viewer"></canvas><div class="hint">Drag to orbit · wheel to zoom · double-click to reset</div></div>
+    <div class="stats">
+      <div class="stat"><small>Scale</small><strong id="statScale">—</strong></div><div class="stat"><small>Pieces</small><strong id="statCount">—</strong></div>
+      <div class="stat"><small>Feasible</small><strong id="statFeasible">—</strong></div><div class="stat"><small>Max violation</small><strong id="statViolation">—</strong></div>
+      <div id="selected">Open a result JSON to inspect it.</div><div id="note"></div>
+    </div>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
