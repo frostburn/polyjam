@@ -15,7 +15,7 @@ Geometry checks are deterministic for a given pose (up to floating-point toleran
 - **Piece overlap:** the 3D separating-axis theorem tests piece face normals plus all edge × edge axes.
 - **Convex hull:** OBJ input only needs `v x y z` records. Polyjam infers support planes/faces, recenters the hull, and normalizes its circumradius to 1.
 
-The **search is heuristic**. It uses parallel stochastic local searches with translation, quaternion rotation, shell-pressure moves, annealing, constraint-penalty tightening, and occasional shakes. A run finding scale `2.71` is an upper bound/construction, not a proof that `2.71` is optimal.
+The **search is heuristic**. It uses parallel stochastic local searches with translation, quaternion rotation, multi-piece jiggles, adaptive annealing, shell-pressure moves, constraint-penalty tightening, and contact-topology restarts. Searches compete rectangular, face-centred-cubic, and body-centred-cubic seeds fitted to the piece and shell, then randomly polish the best construction rather than returning it unchanged. A small outer layer is treated as freely mobile—with larger, more frequent moves—while the crystal core is retained as a useful scaffold; mixed jiggles allow their interface to reconstruct. Among moves tied on target-shell scale and constraint violation, the volume of the pieces' convex hull is minimized as a strict secondary objective, encouraging compact non-rigid configurations without sacrificing the primary fit. A run finding scale `2.71` is an upper bound/construction, not a proof that `2.71` is optimal.
 
 That distinction is reflected in every result file: `scale`, `feasible`, `maxViolation`, and the search budget are all stored separately.
 

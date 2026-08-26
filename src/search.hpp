@@ -25,6 +25,7 @@ struct Metrics {
   double max_violation = 0.0;
   double containment_sq = 0.0;
   double overlap_sq = 0.0;
+  double hull_volume = 0.0;
   int overlapping_pairs = 0;
 };
 
